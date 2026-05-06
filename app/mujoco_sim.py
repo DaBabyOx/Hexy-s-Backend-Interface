@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 import threading
 import time
-from typing import List
+from typing import Iterable, List
 
 import numpy as np
 from pydantic import BaseModel
@@ -62,11 +63,14 @@ class MujocoSimulator:
             return self._state_locked()
 
     def _state_locked(self) -> MujocoState:
+        def _sanitize(values: Iterable[float]) -> List[float]:
+            return [float(v) if math.isfinite(v) else 0.0 for v in values]
+
         return MujocoState(
-            time=float(self.data.time),
-            qpos=[float(value) for value in self.data.qpos],
-            qvel=[float(value) for value in self.data.qvel],
-            ctrl=[float(value) for value in self.data.ctrl],
+            time=float(self.data.time) if math.isfinite(self.data.time) else 0.0,
+            qpos=_sanitize(self.data.qpos),
+            qvel=_sanitize(self.data.qvel),
+            ctrl=_sanitize(self.data.ctrl),
             ncon=int(self.data.ncon),
             nu=int(self.model.nu),
             njnt=int(self.model.njnt),

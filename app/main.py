@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import asyncio
+import logging
 import os
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -25,6 +26,12 @@ def _resolve_model_path() -> Path:
     if env_model:
         return Path(env_model)
 
+    cave_root = os.getenv("CAVE_ROOT")
+    if cave_root:
+        candidate = Path(cave_root) / "cave_hexapod.xml"
+        if candidate.exists():
+            return candidate
+
     rl_root = os.getenv("RL_ROOT")
     if rl_root:
         candidate = Path(rl_root) / "models" / "hexapod_static.xml"
@@ -40,6 +47,14 @@ def _resolve_assets_root() -> Path:
         return Path(rl_root)
 
     return Path(__file__).resolve().parents[2] / "VendorAgnosticRL"
+
+
+def _resolve_cave_root() -> Path:
+    cave_root = os.getenv("CAVE_ROOT")
+    if cave_root:
+        return Path(cave_root)
+
+    return Path(__file__).resolve().parents[2] / "Cave-Gen" / "cave_env"
 
 
 _simulator: MujocoSimulator | None = None
@@ -60,8 +75,34 @@ def _get_simulator() -> MujocoSimulator:
         )
         raise _simulator_error
 
+    resolved_model_path = model_path
     try:
-        _simulator = MujocoSimulator(model_path)
+        raw_model = model_path.read_text(encoding="utf-8")
+        patched_model = raw_model
+        if "file=\"../rl/STLFILES/" in patched_model:
+            patched_model = patched_model.replace(
+                'file="../rl/STLFILES/', 'file="/vendor_rl/STLFILES/'
+            )
+
+        if "file=\"meshes/" in patched_model or "file=\"./meshes/" in patched_model:
+            cave_root = _resolve_cave_root()
+            cave_root_str = str(cave_root)
+            patched_model = patched_model.replace(
+                'file="meshes/', f'file="{cave_root_str}/meshes/'
+            )
+            patched_model = patched_model.replace(
+                'file="./meshes/', f'file="{cave_root_str}/meshes/'
+            )
+
+        if patched_model != raw_model:
+            tmp_path = Path("/tmp/hexy_cave_hexapod.xml")
+            tmp_path.write_text(patched_model, encoding="utf-8")
+            resolved_model_path = tmp_path
+    except Exception:
+        resolved_model_path = model_path
+
+    try:
+        _simulator = MujocoSimulator(resolved_model_path)
     except Exception as exc:  # pragma: no cover - runtime dependency
         _simulator_error = exc
         raise
@@ -69,10 +110,15 @@ def _get_simulator() -> MujocoSimulator:
 
 
 app = FastAPI(title="Hexy Backend", version="0.1.0")
+logger = logging.getLogger("uvicorn.error")
 
 assets_root = _resolve_assets_root()
 if assets_root.exists():
-    app.mount("/assets", StaticFiles(directory=str(assets_root)), name="assets")
+    app.mount("/assets/rl", StaticFiles(directory=str(assets_root)), name="assets-rl")
+
+cave_root = _resolve_cave_root()
+if cave_root.exists():
+    app.mount("/assets/cave", StaticFiles(directory=str(cave_root)), name="assets-cave")
 
 cors_origins = _parse_cors_origins(
     os.getenv("CORS_ORIGINS", "http://localhost:5173")
@@ -123,18 +169,39 @@ async def mujoco_stream(websocket: WebSocket) -> None:
         return
 
     interval_ms = max(10, min(interval_ms, 1000))
+    logger.info("mujoco stream accepted interval_ms=%s", interval_ms)
 
     try:
         simulator = _get_simulator()
     except Exception as exc:
+        logger.exception("mujoco stream init failed")
         await websocket.send_json({"detail": str(exc)})
-        await websocket.close(code=1011)
+        await websocket.close(code=1011, reason=str(exc)[:120])
         return
 
     try:
         while True:
-            state = simulator.state().model_dump()
-            await websocket.send_json(state)
+            try:
+                state = simulator.state().model_dump()
+                await websocket.send_json(state)
+            except Exception as exc:
+                logger.exception("mujoco stream send failed: %s", exc)
+                try:
+                    await websocket.send_json({"detail": str(exc)})
+                except Exception:
+                    pass
+                try:
+                    await websocket.close(code=1011, reason=str(exc)[:120])
+                except Exception:
+                    pass
+                return
             await asyncio.sleep(interval_ms / 1000)
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as exc:
+        logger.info("mujoco stream disconnected code=%s", getattr(exc, "code", None))
         return
+    except Exception as exc:
+        logger.exception("mujoco stream crashed: %s", exc)
+        try:
+            await websocket.close(code=1011, reason=str(exc)[:120])
+        except Exception:
+            pass

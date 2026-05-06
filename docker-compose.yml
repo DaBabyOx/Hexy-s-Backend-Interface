@@ -6,6 +6,9 @@ services:
       - "8000:8000"
     environment:
       RL_ROOT: /vendor_rl
+      CAVE_ROOT: /cave_env
+      MODEL_PATH: /cave_env/cave_hexapod.xml
       CORS_ORIGINS: http://localhost:5173
     volumes:
       - ${VENDOR_RL_PATH}:/vendor_rl:ro
+      - ${CAVE_ENV_PATH}:/cave_env:ro

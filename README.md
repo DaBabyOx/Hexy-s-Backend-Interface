@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## Docker
 
-1. Copy .env.example to .env and set the host path for VendorAgnosticRL.
+1. Copy .env.example to .env and set the host paths for VendorAgnosticRL and Cave-Gen.
 2. Build and run:
 
 ```bash
@@ -38,4 +38,8 @@ The API will be available at http://localhost:8000.
 - GET /mujoco/state
 - POST /mujoco/reset
 - WS /mujoco/stream?interval_ms=50
-- Static assets: /assets/models/hexapod_static.xml (and /assets/STLFILES/*)
+- Static assets:
+	- /assets/rl/models/hexapod_static.xml
+	- /assets/rl/STLFILES/*
+	- /assets/cave/cave_hexapod.xml
+	- /assets/cave/meshes/*
